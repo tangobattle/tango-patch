@@ -23,6 +23,14 @@ pub struct Overrides {
     /// The ROM's text encoding, indexed by byte value.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub charset: Option<Vec<String>>,
+    /// Inclusive chip-id ranges accepted by the patched game. When present,
+    /// these replace the base game's legality set; an empty list accepts no
+    /// chips. Each pair is `[start, end]`.
+    #[serde(
+        deserialize_with = "deserialize_option_legal_chip_ranges",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub legal_chip_ranges: Option<Vec<[usize; 2]>>,
     /// Indexed by chip id.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chips: Option<Vec<ChipOverride>>,
@@ -100,6 +108,24 @@ where
         .map_or(Ok(None), |buf| buf.parse().map(Some).map_err(serde::de::Error::custom))
 }
 
+fn deserialize_option_legal_chip_ranges<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<[usize; 2]>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let ranges = Option::<Vec<[usize; 2]>>::deserialize(deserializer)?;
+    if let Some([start, end]) = ranges
+        .as_ref()
+        .and_then(|ranges| ranges.iter().find(|[start, end]| start > end))
+    {
+        return Err(serde::de::Error::custom(format!(
+            "legal_chip_ranges: range start {start} exceeds end {end}"
+        )));
+    }
+    Ok(ranges)
+}
+
 fn serialize_option_language_identifier<S>(
     value: &Option<unic_langid::LanguageIdentifier>,
     serializer: S,
@@ -123,6 +149,7 @@ mod tests {
             r#"
 language = "en-US"
 charset = [" ", "A", "B"]
+legal_chip_ranges = [[1, 202], [221, 280], [301, 305]]
 chips = [{ name = "Cannon", description = "Fires a shot." }]
 patch_card56_effects = [{ name_template = [{ t = "Attack +" }, { p = 1 }] }]
 "#,
@@ -130,6 +157,10 @@ patch_card56_effects = [{ name_template = [{ t = "Attack +" }, { p = 1 }] }]
         .unwrap();
         assert_eq!(o.language.unwrap().to_string(), "en-US");
         assert_eq!(o.charset.unwrap().len(), 3);
+        assert_eq!(
+            o.legal_chip_ranges.unwrap(),
+            vec![[1, 202], [221, 280], [301, 305]]
+        );
         assert_eq!(o.chips.unwrap()[0].name.as_deref(), Some("Cannon"));
         let effects = o.patch_card56_effects.unwrap();
         assert_eq!(effects[0].name_template.as_ref().unwrap()[1].p, Some(1));
@@ -153,5 +184,13 @@ patch_card56_effects = [{ name_template = [{ t = "Attack +" }, { p = 1 }] }]
     fn empty_is_empty() {
         assert!(Overrides::default().is_empty());
         assert!(!toml::from_str::<Overrides>(r#"charset = ["A"]"#).unwrap().is_empty());
+        let no_legal_chips = toml::from_str::<Overrides>("legal_chip_ranges = []").unwrap();
+        assert_eq!(no_legal_chips.legal_chip_ranges, Some(vec![]));
+        assert!(!no_legal_chips.is_empty());
+    }
+
+    #[test]
+    fn rejects_a_reversed_legal_chip_range() {
+        assert!(toml::from_str::<Overrides>("legal_chip_ranges = [[202, 1]]").is_err());
     }
 }

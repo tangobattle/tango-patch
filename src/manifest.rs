@@ -17,6 +17,7 @@
 //! [rom_overrides]
 //! language = "en-US"
 //! charset = [" ", "0", "1", ...]
+//! legal_chip_ranges = [[1, 202], [221, 280], [301, 305]]
 //! ```
 //!
 //! Note what is *absent*: the manifest never names a game, ROM code, or
