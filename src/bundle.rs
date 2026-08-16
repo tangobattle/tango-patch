@@ -98,6 +98,14 @@ impl Builder {
                 )));
             }
         }
+        for target in self.manifest.rom_overrides.legal_chip_ranges.keys() {
+            if !self.roms.contains_key(target) {
+                return Err(Error::Invalid(format!(
+                    "legal chip ranges for {target} have no matching {}",
+                    target.rom_path()
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -261,6 +269,18 @@ title = "Test Patch"
         b.add_rom(target("BR6E_00"), b"bps".to_vec());
         b.add_save_template(target("BR5E_00"), DEFAULT_TEMPLATE, b"save".to_vec())
             .unwrap();
+        let err = b.to_vec().unwrap_err().to_string();
+        assert!(err.contains("BR5E_00"), "{err}");
+    }
+
+    #[test]
+    fn legal_chip_ranges_for_an_unpatched_rom_are_rejected() {
+        let mut b = builder();
+        b.add_rom(target("BR6E_00"), b"bps".to_vec());
+        b.manifest
+            .rom_overrides
+            .legal_chip_ranges
+            .insert(target("BR5E_00"), vec![[1, 202]]);
         let err = b.to_vec().unwrap_err().to_string();
         assert!(err.contains("BR5E_00"), "{err}");
     }

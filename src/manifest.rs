@@ -17,14 +17,17 @@
 //! [rom_overrides]
 //! language = "en-US"
 //! charset = [" ", "0", "1", ...]
-//! legal_chip_ranges = [[1, 202], [221, 280], [301, 305]]
+//!
+//! [rom_overrides.legal_chip_ranges]
+//! BR5E_00 = [[1, 202], [221, 280], [301, 305]]
+//! BR6E_00 = [[1, 202], [221, 280], [306, 310]]
 //! ```
 //!
-//! Note what is *absent*: the manifest never names a game, ROM code, or
-//! family. Which games a package patches is read off the archive's `roms/`
-//! entries, and the netplay family comes from the game being played. That
-//! is what makes [`Compatibility::Vanilla`] and
-//! [`Compatibility::Group`] impossible to state ambiguously — see [`crate::tag`].
+//! Which games a package patches is still read off the archive's `roms/`
+//! entries; target names appear in the manifest only when an override must
+//! differ between those ROMs. The netplay family comes from the game being
+//! played, which makes [`Compatibility::Vanilla`] and [`Compatibility::Group`]
+//! impossible to state ambiguously — see [`crate::tag`].
 
 use crate::overrides::Overrides;
 use crate::Error;

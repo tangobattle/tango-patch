@@ -103,6 +103,14 @@ impl<R: Read + Seek> Package<R> {
         if contents.is_empty() {
             return Err(Error::Invalid(format!("no {ROMS_DIR}/*{BPS_EXT} entries")));
         }
+        for target in manifest.rom_overrides.legal_chip_ranges.keys() {
+            if !contents.contains_key(target) {
+                return Err(Error::Invalid(format!(
+                    "legal chip ranges for {target} have no matching {}",
+                    target.rom_path()
+                )));
+            }
+        }
 
         Ok(Package {
             manifest,
