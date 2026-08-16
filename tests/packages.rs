@@ -5,8 +5,23 @@
 mod common;
 
 use common::{manifest, target, TempDir};
+use std::io::Write as _;
 use tango_patch::layout::DEFAULT_TEMPLATE;
 use tango_patch::{bundle, Compatibility, Error, Package};
+
+const LEGACY_MANIFEST: &str = r#"
+format = 1
+name = "legacy"
+version = "1.0.0"
+title = "Legacy"
+
+[rom_overrides]
+language = "en-US"
+charset = [" ", "A"]
+
+[rom_overrides.legal_chip_ranges]
+BR5E_00 = [[1, 202], [301, 305]]
+"#;
 
 fn full() -> bundle::Builder {
     let mut manifest = manifest("test_patch", "1.2.3", "group:testing");
@@ -65,6 +80,54 @@ fn a_built_package_reads_back_intact() {
     assert_eq!(pkg.save_templates(target("BR5E_00")).count(), 0);
     assert_eq!(pkg.save_template(target("BR6E_00"), DEFAULT_TEMPLATE).unwrap(), b"save");
     assert_eq!(pkg.save_template(target("BR6E_00"), "gregar").unwrap(), b"save-gregar");
+}
+
+#[test]
+fn a_format_1_package_is_upgraded_per_rom_when_opened() {
+    let mut archive = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    archive.start_file("manifest.toml", options).unwrap();
+    archive.write_all(LEGACY_MANIFEST.as_bytes()).unwrap();
+    archive.start_file("roms/BR5E_00.bps", options).unwrap();
+    archive.write_all(b"bps-5").unwrap();
+    archive.start_file("roms/BR6E_00.bps", options).unwrap();
+    archive.write_all(b"bps-6").unwrap();
+    let raw = archive.finish().unwrap().into_inner();
+
+    let pkg = Package::read(std::io::Cursor::new(raw)).unwrap();
+    let manifest = pkg.manifest();
+    let gregar = &manifest.rom_overrides[&target("BR5E_00")];
+    let falzar = &manifest.rom_overrides[&target("BR6E_00")];
+
+    assert_eq!(manifest.format, 2);
+    assert_eq!(manifest.rom_overrides.len(), 2);
+    assert_eq!(gregar.charset, Some(vec![" ".into(), "A".into()]));
+    assert_eq!(gregar.legal_chip_ranges, Some(vec![[1, 202], [301, 305]]));
+    assert_eq!(falzar.charset, Some(vec![" ".into(), "A".into()]));
+    assert!(falzar.legal_chip_ranges.is_none());
+}
+
+#[test]
+fn a_format_1_source_tree_is_written_as_format_2() {
+    let dir = TempDir::new();
+    let src = dir.path().join("legacy-src");
+    std::fs::create_dir_all(src.join("roms")).unwrap();
+    std::fs::write(src.join("manifest.toml"), LEGACY_MANIFEST).unwrap();
+    std::fs::write(src.join("roms/BR5E_00.bps"), b"bps-5").unwrap();
+    std::fs::write(src.join("roms/BR6E_00.bps"), b"bps-6").unwrap();
+
+    let builder = bundle::read_dir(&src).unwrap();
+    assert!(builder.manifest().to_toml().unwrap().contains("format = 2"));
+    let pkg = Package::read(std::io::Cursor::new(builder.to_vec().unwrap())).unwrap();
+
+    assert_eq!(pkg.manifest().format, 2);
+    assert_eq!(pkg.manifest().rom_overrides.len(), 2);
+    assert!(pkg.manifest().rom_overrides[&target("BR5E_00")]
+        .legal_chip_ranges
+        .is_some());
+    assert!(pkg.manifest().rom_overrides[&target("BR6E_00")]
+        .legal_chip_ranges
+        .is_none());
 }
 
 #[test]

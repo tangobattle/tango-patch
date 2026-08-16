@@ -63,6 +63,7 @@ impl Builder {
     }
 
     pub fn add_rom(&mut self, target: RomTarget, bps: Vec<u8>) -> &mut Self {
+        self.manifest.resolve_legacy_for_target(target);
         self.roms.insert(target, bps);
         self
     }
@@ -114,6 +115,12 @@ impl Builder {
     pub fn write<W: Write + Seek>(&self, writer: W) -> Result<(), Error> {
         self.validate()?;
 
+        let mut manifest = self.manifest.clone();
+        for target in self.roms.keys().copied() {
+            manifest.resolve_legacy_for_target(target);
+        }
+        manifest.finish_legacy_resolution();
+
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated)
             .last_modified_time(zip::DateTime::default())
@@ -122,7 +129,7 @@ impl Builder {
 
         // Manifest first so a reader hits it in the first block.
         zip.start_file(MANIFEST_PATH, options)?;
-        zip.write_all(self.manifest.to_toml()?.as_bytes())?;
+        zip.write_all(manifest.to_toml()?.as_bytes())?;
 
         if let Some(readme) = &self.readme {
             zip.start_file(README_PATH, options)?;
@@ -198,6 +205,9 @@ pub fn read_dir(src: &Path) -> Result<Builder, Error> {
             .map_err(|e| e.at(&path))?;
     }
 
+    // A source tree has now supplied the full target set, so expose the
+    // normalized format-2 manifest through Builder::manifest as well.
+    builder.manifest.finish_legacy_resolution();
     builder.validate().map_err(|e| e.at(src))?;
     Ok(builder)
 }

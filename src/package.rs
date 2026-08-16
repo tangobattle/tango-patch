@@ -69,7 +69,7 @@ impl<R: Read + Seek> Package<R> {
     pub fn read(reader: R) -> Result<Self, Error> {
         let mut archive = zip::ZipArchive::new(reader)?;
 
-        let manifest = {
+        let mut manifest = {
             let entry = archive
                 .by_name(MANIFEST_PATH)
                 .map_err(|_| Error::Invalid(format!("no {MANIFEST_PATH}")))?;
@@ -103,6 +103,10 @@ impl<R: Read + Seek> Package<R> {
         if contents.is_empty() {
             return Err(Error::Invalid(format!("no {ROMS_DIR}/*{BPS_EXT} entries")));
         }
+        for target in contents.keys().copied() {
+            manifest.resolve_legacy_for_target(target);
+        }
+        manifest.finish_legacy_resolution();
         for target in manifest.rom_overrides.keys() {
             if !contents.contains_key(target) {
                 return Err(Error::Invalid(format!(

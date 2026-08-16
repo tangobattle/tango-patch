@@ -36,8 +36,10 @@ use crate::{Error, RomTarget};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// The only manifest format version this crate reads or writes.
+/// The manifest format emitted by this crate. The reader also accepts
+/// legacy format 1 and upgrades it in memory.
 pub const FORMAT: u32 = 2;
+const LEGACY_FORMAT: u32 = 1;
 
 /// Longest accepted patch name / netplay group.
 pub const MAX_NAME_LEN: usize = 64;
@@ -77,28 +79,68 @@ pub struct Manifest {
     /// Overrides applied on top of each exact patched ROM's own data.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub rom_overrides: BTreeMap<RomTarget, Overrides>,
+    /// Format 1 applied one override object to every ROM. Readers retain it
+    /// until the package's ROM targets are known, then expand it into the
+    /// format-2 map above. It is never serialized.
+    #[serde(skip)]
+    legacy_rom_overrides: Option<Overrides>,
 }
 
 impl Manifest {
-    /// Parse and validate a manifest. Rejects unknown format versions,
-    /// bad names, and bad group names, so a package that opens is a
-    /// package whose metadata is usable.
+    /// Parse and validate a format-1 or format-2 manifest. Format 1 is held
+    /// as a compatibility fallback until a package reader supplies its ROM
+    /// targets; all newly serialized manifests use format 2.
     pub fn parse(raw: &str) -> Result<Self, Error> {
-        let manifest: Manifest = toml::from_str(raw)?;
-        if manifest.format != FORMAT {
-            return Err(Error::UnsupportedFormat(manifest.format));
+        #[derive(Deserialize)]
+        struct FormatProbe {
+            format: u32,
         }
-        crate::validate_name(&manifest.name).map_err(|e| Error::Invalid(format!("name: {e}")))?;
-        if manifest.title.trim().is_empty() {
-            return Err(Error::Invalid("title: must not be empty".into()));
-        }
-        if let Compatibility::Group(group) = &manifest.netplay {
-            crate::validate_name(group).map_err(|e| Error::Invalid(format!("netplay group: {e}")))?;
-        }
+
+        let format = toml::from_str::<FormatProbe>(raw)?.format;
+        let manifest = match format {
+            FORMAT => toml::from_str(raw)?,
+            LEGACY_FORMAT => parse_legacy(raw)?,
+            other => return Err(Error::UnsupportedFormat(other)),
+        };
+        manifest.validate()?;
         Ok(manifest)
     }
 
+    fn validate(&self) -> Result<(), Error> {
+        crate::validate_name(&self.name).map_err(|e| Error::Invalid(format!("name: {e}")))?;
+        if self.title.trim().is_empty() {
+            return Err(Error::Invalid("title: must not be empty".into()));
+        }
+        if let Compatibility::Group(group) = &self.netplay {
+            crate::validate_name(group).map_err(|e| Error::Invalid(format!("netplay group: {e}")))?;
+        }
+        Ok(())
+    }
+
+    /// Effective overrides before a legacy manifest has been expanded by a
+    /// package reader.
+    pub fn rom_overrides_for(&self, target: RomTarget) -> Option<&Overrides> {
+        self.rom_overrides.get(&target).or(self.legacy_rom_overrides.as_ref())
+    }
+
+    pub(crate) fn resolve_legacy_for_target(&mut self, target: RomTarget) {
+        if !self.rom_overrides.contains_key(&target) {
+            if let Some(overrides) = &self.legacy_rom_overrides {
+                self.rom_overrides.insert(target, overrides.clone());
+            }
+        }
+    }
+
+    pub(crate) fn finish_legacy_resolution(&mut self) {
+        self.legacy_rom_overrides = None;
+    }
+
     pub fn to_toml(&self) -> Result<String, Error> {
+        if self.legacy_rom_overrides.is_some() {
+            return Err(Error::Invalid(
+                "format 1 overrides must be resolved against the package ROMs before writing".into(),
+            ));
+        }
         Ok(toml::to_string_pretty(self)?)
     }
 
@@ -111,6 +153,61 @@ impl Manifest {
     pub fn file_name(&self) -> String {
         format!("{}.{}", self.stem(), crate::EXTENSION)
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyManifest {
+    format: u32,
+    name: String,
+    version: semver::Version,
+    title: String,
+    #[serde(default)]
+    authors: Vec<String>,
+    #[serde(default)]
+    license: Option<String>,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    netplay: Compatibility,
+    #[serde(default)]
+    rom_overrides: toml::Table,
+}
+
+fn parse_legacy(raw: &str) -> Result<Manifest, Error> {
+    let legacy: LegacyManifest = toml::from_str(raw)?;
+    debug_assert_eq!(legacy.format, LEGACY_FORMAT);
+
+    let mut fields = legacy.rom_overrides;
+    let ranges: BTreeMap<RomTarget, Vec<[usize; 2]>> = match fields.remove("legal_chip_ranges") {
+        Some(value) => value.try_into()?,
+        None => BTreeMap::new(),
+    };
+    let common: Overrides = toml::Value::Table(fields).try_into()?;
+    let mut rom_overrides = BTreeMap::new();
+    for (target, ranges) in ranges {
+        if let Some([start, end]) = ranges.iter().find(|[start, end]| start > end) {
+            return Err(Error::Invalid(format!(
+                "rom_overrides.legal_chip_ranges.{target}: range start {start} exceeds end {end}"
+            )));
+        }
+        let mut overrides = common.clone();
+        overrides.legal_chip_ranges = Some(ranges);
+        rom_overrides.insert(target, overrides);
+    }
+
+    Ok(Manifest {
+        format: FORMAT,
+        name: legacy.name,
+        version: legacy.version,
+        title: legacy.title,
+        authors: legacy.authors,
+        license: legacy.license,
+        source: legacy.source,
+        netplay: legacy.netplay,
+        rom_overrides,
+        legacy_rom_overrides: (!common.is_empty()).then_some(common),
+    })
 }
 
 /// Who a patch version may netplay against.
@@ -271,8 +368,49 @@ legal_chip_ranges = [[1, 202], [306, 310]]
     }
 
     #[test]
+    fn format_1_global_overrides_are_retained_until_targets_are_known() {
+        let raw = r#"
+format = 1
+name = "legacy"
+version = "1.0.0"
+title = "Legacy"
+
+[rom_overrides]
+language = "en-US"
+charset = [" ", "A"]
+
+[rom_overrides.legal_chip_ranges]
+BR5E_00 = [[1, 202], [301, 305]]
+"#;
+        let mut manifest = Manifest::parse(raw).unwrap();
+        let gregar = "BR5E_00".parse().unwrap();
+        let falzar = "BR6E_00".parse().unwrap();
+
+        assert_eq!(manifest.format, FORMAT);
+        assert_eq!(
+            manifest.rom_overrides_for(gregar).unwrap().legal_chip_ranges.as_deref(),
+            Some([[1, 202], [301, 305]].as_slice())
+        );
+        assert_eq!(
+            manifest.rom_overrides_for(falzar).unwrap().language.as_ref().unwrap().to_string(),
+            "en-US"
+        );
+        assert!(manifest.rom_overrides_for(falzar).unwrap().legal_chip_ranges.is_none());
+        assert!(manifest.to_toml().is_err());
+
+        manifest.resolve_legacy_for_target(gregar);
+        manifest.resolve_legacy_for_target(falzar);
+        manifest.finish_legacy_resolution();
+        let upgraded = manifest.to_toml().unwrap();
+        assert!(upgraded.contains("format = 2"));
+        assert!(upgraded.contains("[rom_overrides.BR5E_00]"));
+        assert!(upgraded.contains("[rom_overrides.BR6E_00]"));
+        assert_eq!(Manifest::parse(&upgraded).unwrap(), manifest);
+    }
+
+    #[test]
     fn unsupported_formats_are_rejected() {
-        for format in [1, 3] {
+        for format in [0, 3] {
             let raw = MINIMAL.replace("format = 2", &format!("format = {format}"));
             assert!(matches!(
                 Manifest::parse(&raw),

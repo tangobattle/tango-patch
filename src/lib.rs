@@ -74,7 +74,7 @@ pub enum Error {
     #[cfg(feature = "index")]
     #[error("malformed index: {0}")]
     IndexSyntax(#[from] serde_json::Error),
-    #[error("format {0} is not supported (this build reads format {})", manifest::FORMAT)]
+    #[error("format {0} is not supported")]
     UnsupportedFormat(u32),
     #[error("{0}")]
     Invalid(String),
