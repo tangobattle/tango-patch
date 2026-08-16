@@ -4,7 +4,7 @@
 use super::{probe_format, Compatibility, Manifest, FORMAT};
 use crate::overrides::Overrides;
 use crate::{Error, RomTarget};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 const FORMAT_1: u32 = 1;
@@ -39,6 +39,22 @@ struct Format1Manifest {
     rom_overrides: toml::Table,
 }
 
+/// Serialization-only current-format shape. The adapter emits this wire
+/// representation, then the strict parser constructs and validates the real
+/// `Manifest` exactly as it would for native format-2 input.
+#[derive(Serialize)]
+struct Format2Wire {
+    format: u32,
+    name: String,
+    version: semver::Version,
+    title: String,
+    authors: Vec<String>,
+    license: Option<String>,
+    source: Option<String>,
+    netplay: Compatibility,
+    rom_overrides: BTreeMap<RomTarget, Overrides>,
+}
+
 fn adapt_format_1(
     raw: &str,
     targets: impl IntoIterator<Item = RomTarget>,
@@ -57,17 +73,12 @@ fn adapt_format_1(
         rom_overrides.extend(targets.into_iter().map(|target| (target, common.clone())));
     }
     for (target, ranges) in ranges {
-        if let Some([start, end]) = ranges.iter().find(|[start, end]| start > end) {
-            return Err(Error::Invalid(format!(
-                "rom_overrides.legal_chip_ranges.{target}: range start {start} exceeds end {end}"
-            )));
-        }
         let mut overrides = common.clone();
         overrides.legal_chip_ranges = Some(ranges);
         rom_overrides.insert(target, overrides);
     }
 
-    let manifest = Manifest {
+    let wire = Format2Wire {
         format: FORMAT,
         name: legacy.name,
         version: legacy.version,
@@ -78,6 +89,5 @@ fn adapt_format_1(
         netplay: legacy.netplay,
         rom_overrides,
     };
-    manifest.validate()?;
-    Ok(manifest)
+    Manifest::parse(&toml::to_string_pretty(&wire)?)
 }

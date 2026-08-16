@@ -339,6 +339,26 @@ BR5E_00 = [[1, 202], [301, 305]]
     }
 
     #[test]
+    fn format_1_ranges_are_validated_by_the_format_2_parser() {
+        let raw = r#"
+format = 1
+name = "legacy"
+version = "1.0.0"
+title = "Legacy"
+
+[rom_overrides.legal_chip_ranges]
+BR5E_00 = [[202, 1]]
+"#;
+        let err = Manifest::parse_compatible(raw, ["BR5E_00".parse().unwrap()]).unwrap_err();
+        assert!(matches!(err, Error::ManifestSyntax(_)));
+        assert!(
+            err.to_string()
+                .contains("legal_chip_ranges: range start 202 exceeds end 1"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn unsupported_formats_are_rejected() {
         for format in [0, 3] {
             let raw = MINIMAL.replace("format = 2", &format!("format = {format}"));
