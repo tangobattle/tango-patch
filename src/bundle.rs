@@ -63,7 +63,6 @@ impl Builder {
     }
 
     pub fn add_rom(&mut self, target: RomTarget, bps: Vec<u8>) -> &mut Self {
-        self.manifest.resolve_legacy_for_target(target);
         self.roms.insert(target, bps);
         self
     }
@@ -115,12 +114,6 @@ impl Builder {
     pub fn write<W: Write + Seek>(&self, writer: W) -> Result<(), Error> {
         self.validate()?;
 
-        let mut manifest = self.manifest.clone();
-        for target in self.roms.keys().copied() {
-            manifest.resolve_legacy_for_target(target);
-        }
-        manifest.finish_legacy_resolution();
-
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated)
             .last_modified_time(zip::DateTime::default())
@@ -129,7 +122,7 @@ impl Builder {
 
         // Manifest first so a reader hits it in the first block.
         zip.start_file(MANIFEST_PATH, options)?;
-        zip.write_all(manifest.to_toml()?.as_bytes())?;
+        zip.write_all(self.manifest.to_toml()?.as_bytes())?;
 
         if let Some(readme) = &self.readme {
             zip.start_file(README_PATH, options)?;
@@ -176,7 +169,18 @@ impl Builder {
 pub fn read_dir(src: &Path) -> Result<Builder, Error> {
     let manifest_path = src.join(MANIFEST_PATH);
     let raw = std::fs::read_to_string(&manifest_path).map_err(|e| Error::from(e).at(&manifest_path))?;
-    let manifest = Manifest::parse(&raw).map_err(|e| e.at(&manifest_path))?;
+
+    let mut roms = Vec::new();
+    for (path, name) in list_dir(&src.join(ROMS_DIR))? {
+        let Some(stem) = name.strip_suffix(".bps") else {
+            return Err(Error::Invalid(format!("{ROMS_DIR}/{name}: not a .bps")));
+        };
+        let target: RomTarget = stem.parse().map_err(|e: Error| e.at(&path))?;
+        roms.push((target, path));
+    }
+
+    let manifest = Manifest::parse_compatible(&raw, roms.iter().map(|(target, _)| *target))
+        .map_err(|e| e.at(&manifest_path))?;
     let mut builder = Builder::new(manifest);
 
     for candidate in [README_PATH, "README"] {
@@ -187,11 +191,7 @@ pub fn read_dir(src: &Path) -> Result<Builder, Error> {
         }
     }
 
-    for (path, name) in list_dir(&src.join(ROMS_DIR))? {
-        let Some(stem) = name.strip_suffix(".bps") else {
-            return Err(Error::Invalid(format!("{ROMS_DIR}/{name}: not a .bps")));
-        };
-        let target: RomTarget = stem.parse().map_err(|e: Error| e.at(&path))?;
+    for (target, path) in roms {
         builder.add_rom(target, std::fs::read(&path)?);
     }
 
@@ -205,9 +205,6 @@ pub fn read_dir(src: &Path) -> Result<Builder, Error> {
             .map_err(|e| e.at(&path))?;
     }
 
-    // A source tree has now supplied the full target set, so expose the
-    // normalized format-2 manifest through Builder::manifest as well.
-    builder.manifest.finish_legacy_resolution();
     builder.validate().map_err(|e| e.at(src))?;
     Ok(builder)
 }

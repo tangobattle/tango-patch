@@ -69,18 +69,8 @@ impl<R: Read + Seek> Package<R> {
     pub fn read(reader: R) -> Result<Self, Error> {
         let mut archive = zip::ZipArchive::new(reader)?;
 
-        let mut manifest = {
-            let entry = archive
-                .by_name(MANIFEST_PATH)
-                .map_err(|_| Error::Invalid(format!("no {MANIFEST_PATH}")))?;
-            let declared = entry.size();
-            let raw = read_capped(entry, declared, MAX_MANIFEST, MANIFEST_PATH)?;
-            let raw = String::from_utf8(raw).map_err(|_| Error::Invalid(format!("{MANIFEST_PATH} is not UTF-8")))?;
-            Manifest::parse(&raw)?
-        };
-
-        // Payloads first, then templates — a template is only reachable
-        // through the target its .bps establishes.
+        // Discover exact ROM targets before parsing metadata: format 1 needs
+        // them only at this boundary to produce a complete format-2 manifest.
         let names: Vec<String> = archive.file_names().map(|s| s.to_owned()).collect();
         let mut contents: BTreeMap<RomTarget, BTreeSet<String>> = BTreeMap::new();
         for name in &names {
@@ -88,6 +78,21 @@ impl<R: Read + Seek> Package<R> {
                 contents.entry(stem.parse()?).or_default();
             }
         }
+        if contents.is_empty() {
+            return Err(Error::Invalid(format!("no {ROMS_DIR}/*{BPS_EXT} entries")));
+        }
+
+        let manifest = {
+            let entry = archive
+                .by_name(MANIFEST_PATH)
+                .map_err(|_| Error::Invalid(format!("no {MANIFEST_PATH}")))?;
+            let declared = entry.size();
+            let raw = read_capped(entry, declared, MAX_MANIFEST, MANIFEST_PATH)?;
+            let raw = String::from_utf8(raw).map_err(|_| Error::Invalid(format!("{MANIFEST_PATH} is not UTF-8")))?;
+            Manifest::parse_compatible(&raw, contents.keys().copied())?
+        };
+
+        // A template is only reachable through the target its .bps establishes.
         for name in &names {
             let Some(stem) = strip_dir_ext(name, SAVES_DIR, SAVE_EXT) else {
                 continue;
@@ -100,13 +105,6 @@ impl<R: Read + Seek> Package<R> {
                 templates.insert(template);
             }
         }
-        if contents.is_empty() {
-            return Err(Error::Invalid(format!("no {ROMS_DIR}/*{BPS_EXT} entries")));
-        }
-        for target in contents.keys().copied() {
-            manifest.resolve_legacy_for_target(target);
-        }
-        manifest.finish_legacy_resolution();
         for target in manifest.rom_overrides.keys() {
             if !contents.contains_key(target) {
                 return Err(Error::Invalid(format!(
