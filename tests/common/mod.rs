@@ -11,7 +11,7 @@ pub fn target(s: &str) -> RomTarget {
 pub fn manifest(name: &str, version: &str, netplay: &str) -> Manifest {
     Manifest::parse(&format!(
         r#"
-format = 1
+format = 2
 name = "{name}"
 version = "{version}"
 title = "Test {name}"

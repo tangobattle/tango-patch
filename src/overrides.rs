@@ -7,9 +7,7 @@
 //! types here means the bundler validates an author's overrides at pack
 //! time without depending on `tango-dataview`.
 
-use crate::RomTarget;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
 #[serde(default, deny_unknown_fields)]
@@ -25,14 +23,14 @@ pub struct Overrides {
     /// The ROM's text encoding, indexed by byte value.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub charset: Option<Vec<String>>,
-    /// Inclusive chip-id ranges accepted by each patched ROM target. A target
-    /// present in this map replaces that game's base legality set; an empty
-    /// list accepts no chips. Each pair is `[start, end]`.
+    /// Inclusive chip-id ranges accepted by this patched ROM. When present,
+    /// these replace the base game's legality set; an empty list accepts no
+    /// chips. Each pair is `[start, end]`.
     #[serde(
-        deserialize_with = "deserialize_legal_chip_ranges",
-        skip_serializing_if = "BTreeMap::is_empty"
+        deserialize_with = "deserialize_option_legal_chip_ranges",
+        skip_serializing_if = "Option::is_none"
     )]
-    pub legal_chip_ranges: BTreeMap<RomTarget, Vec<[usize; 2]>>,
+    pub legal_chip_ranges: Option<Vec<[usize; 2]>>,
     /// Indexed by chip id.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chips: Option<Vec<ChipOverride>>,
@@ -110,19 +108,19 @@ where
         .map_or(Ok(None), |buf| buf.parse().map(Some).map_err(serde::de::Error::custom))
 }
 
-fn deserialize_legal_chip_ranges<'de, D>(deserializer: D) -> Result<BTreeMap<RomTarget, Vec<[usize; 2]>>, D::Error>
+fn deserialize_option_legal_chip_ranges<'de, D>(deserializer: D) -> Result<Option<Vec<[usize; 2]>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let by_target = BTreeMap::<RomTarget, Vec<[usize; 2]>>::deserialize(deserializer)?;
-    for (target, ranges) in &by_target {
+    let ranges = Option::<Vec<[usize; 2]>>::deserialize(deserializer)?;
+    if let Some(ranges) = &ranges {
         if let Some([start, end]) = ranges.iter().find(|[start, end]| start > end) {
             return Err(serde::de::Error::custom(format!(
-                "legal_chip_ranges.{target}: range start {start} exceeds end {end}"
+                "legal_chip_ranges: range start {start} exceeds end {end}"
             )));
         }
     }
-    Ok(by_target)
+    Ok(ranges)
 }
 
 fn serialize_option_language_identifier<S>(
@@ -151,21 +149,15 @@ charset = [" ", "A", "B"]
 chips = [{ name = "Cannon", description = "Fires a shot." }]
 patch_card56_effects = [{ name_template = [{ t = "Attack +" }, { p = 1 }] }]
 
-[legal_chip_ranges]
-BR5E_00 = [[1, 202], [221, 280], [301, 305]]
-BR6E_00 = [[1, 202], [221, 280], [306, 310]]
+legal_chip_ranges = [[1, 202], [221, 280], [301, 305]]
 "#,
         )
         .unwrap();
         assert_eq!(o.language.unwrap().to_string(), "en-US");
         assert_eq!(o.charset.unwrap().len(), 3);
         assert_eq!(
-            o.legal_chip_ranges[&"BR5E_00".parse().unwrap()],
+            o.legal_chip_ranges.unwrap(),
             [[1, 202], [221, 280], [301, 305]]
-        );
-        assert_eq!(
-            o.legal_chip_ranges[&"BR6E_00".parse().unwrap()],
-            [[1, 202], [221, 280], [306, 310]]
         );
         assert_eq!(o.chips.unwrap()[0].name.as_deref(), Some("Cannon"));
         let effects = o.patch_card56_effects.unwrap();
@@ -190,13 +182,13 @@ BR6E_00 = [[1, 202], [221, 280], [306, 310]]
     fn empty_is_empty() {
         assert!(Overrides::default().is_empty());
         assert!(!toml::from_str::<Overrides>(r#"charset = ["A"]"#).unwrap().is_empty());
-        let no_legal_chips = toml::from_str::<Overrides>("legal_chip_ranges = { BR5E_00 = [] }").unwrap();
-        assert!(no_legal_chips.legal_chip_ranges[&"BR5E_00".parse().unwrap()].is_empty());
+        let no_legal_chips = toml::from_str::<Overrides>("legal_chip_ranges = []").unwrap();
+        assert!(no_legal_chips.legal_chip_ranges.as_deref().unwrap().is_empty());
         assert!(!no_legal_chips.is_empty());
     }
 
     #[test]
     fn rejects_a_reversed_legal_chip_range() {
-        assert!(toml::from_str::<Overrides>("legal_chip_ranges = { BR5E_00 = [[202, 1]] }").is_err());
+        assert!(toml::from_str::<Overrides>("legal_chip_ranges = [[202, 1]]").is_err());
     }
 }

@@ -12,8 +12,13 @@ fn full() -> bundle::Builder {
     let mut manifest = manifest("test_patch", "1.2.3", "group:testing");
     manifest
         .rom_overrides
-        .legal_chip_ranges
-        .insert(target("BR5E_00"), vec![[1, 202], [221, 280], [301, 305]]);
+        .insert(
+            target("BR5E_00"),
+            tango_patch::Overrides {
+                legal_chip_ranges: Some(vec![[1, 202], [221, 280], [301, 305]]),
+                ..Default::default()
+            },
+        );
     let mut b = bundle::Builder::new(manifest);
     b.set_readme("# hello");
     b.add_rom(target("BR6E_00"), b"bps-6".to_vec());
@@ -34,7 +39,10 @@ fn a_built_package_reads_back_intact() {
     assert_eq!(pkg.manifest().netplay, Compatibility::Group("testing".into()));
     assert_eq!(pkg.manifest().license.as_deref(), Some("MIT"));
     assert_eq!(
-        pkg.manifest().rom_overrides.legal_chip_ranges[&target("BR5E_00")],
+        pkg.manifest().rom_overrides[&target("BR5E_00")]
+            .legal_chip_ranges
+            .as_deref()
+            .unwrap(),
         [[1, 202], [221, 280], [301, 305]]
     );
 

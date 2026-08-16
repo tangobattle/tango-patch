@@ -5,7 +5,7 @@
 //! repeated per version.
 //!
 //! ```toml
-//! format = 1
+//! format = 2
 //! name = "bn6_allstars"
 //! version = "1.1.0"
 //! title = "BN6 All-Stars + BBN6"
@@ -14,13 +14,15 @@
 //! source = "https://github.com/luckytyphlosion/bn6-all-stars"
 //! netplay = "group:bn6allstars"
 //!
-//! [rom_overrides]
+//! [rom_overrides.BR5E_00]
 //! language = "en-US"
 //! charset = [" ", "0", "1", ...]
+//! legal_chip_ranges = [[1, 202], [221, 280], [301, 305]]
 //!
-//! [rom_overrides.legal_chip_ranges]
-//! BR5E_00 = [[1, 202], [221, 280], [301, 305]]
-//! BR6E_00 = [[1, 202], [221, 280], [306, 310]]
+//! [rom_overrides.BR6E_00]
+//! language = "en-US"
+//! charset = [" ", "0", "1", ...]
+//! legal_chip_ranges = [[1, 202], [221, 280], [306, 310]]
 //! ```
 //!
 //! Which games a package patches is still read off the archive's `roms/`
@@ -30,11 +32,12 @@
 //! impossible to state ambiguously — see [`crate::tag`].
 
 use crate::overrides::Overrides;
-use crate::Error;
+use crate::{Error, RomTarget};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// The only manifest format version this crate reads or writes.
-pub const FORMAT: u32 = 1;
+pub const FORMAT: u32 = 2;
 
 /// Longest accepted patch name / netplay group.
 pub const MAX_NAME_LEN: usize = 64;
@@ -71,10 +74,9 @@ pub struct Manifest {
     /// compatibility would desync rather than fail to match.
     #[serde(default, skip_serializing_if = "Compatibility::is_default")]
     pub netplay: Compatibility,
-    /// Asset name/description overrides applied on top of the patched
-    /// ROM's own data.
-    #[serde(default, skip_serializing_if = "Overrides::is_empty")]
-    pub rom_overrides: Overrides,
+    /// Overrides applied on top of each exact patched ROM's own data.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub rom_overrides: BTreeMap<RomTarget, Overrides>,
 }
 
 impl Manifest {
@@ -200,7 +202,7 @@ mod tests {
     use super::*;
 
     const MINIMAL: &str = r#"
-format = 1
+format = 2
 name = "bn6_allstars"
 version = "1.1.0"
 title = "BN6 All-Stars"
@@ -246,9 +248,37 @@ title = "BN6 All-Stars"
     }
 
     #[test]
-    fn unknown_format_is_rejected() {
-        let raw = MINIMAL.replace("format = 1", "format = 2");
-        assert!(matches!(Manifest::parse(&raw), Err(Error::UnsupportedFormat(2))));
+    fn rom_overrides_are_keyed_by_exact_target() {
+        let raw = format!(
+            r#"{MINIMAL}
+[rom_overrides.BR5E_00]
+language = "en-US"
+legal_chip_ranges = [[1, 202], [301, 305]]
+
+[rom_overrides.BR6E_00]
+legal_chip_ranges = [[1, 202], [306, 310]]
+"#
+        );
+        let manifest = Manifest::parse(&raw).unwrap();
+        assert_eq!(manifest.rom_overrides.len(), 2);
+        assert_eq!(
+            manifest.rom_overrides[&"BR5E_00".parse().unwrap()]
+                .legal_chip_ranges
+                .as_deref(),
+            Some([[1, 202], [301, 305]].as_slice())
+        );
+        assert_eq!(Manifest::parse(&manifest.to_toml().unwrap()).unwrap(), manifest);
+    }
+
+    #[test]
+    fn unsupported_formats_are_rejected() {
+        for format in [1, 3] {
+            let raw = MINIMAL.replace("format = 2", &format!("format = {format}"));
+            assert!(matches!(
+                Manifest::parse(&raw),
+                Err(Error::UnsupportedFormat(actual)) if actual == format
+            ));
+        }
     }
 
     #[test]
