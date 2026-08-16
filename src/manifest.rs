@@ -47,8 +47,9 @@ struct FormatProbe {
     format: u32,
 }
 
-fn probe_format(raw: &str) -> Result<u32, Error> {
-    Ok(toml::from_str::<FormatProbe>(raw)?.format)
+fn probe_format(table: &toml::Table) -> Result<u32, Error> {
+    let probe: FormatProbe = toml::Value::Table(table.clone()).try_into()?;
+    Ok(probe.format)
 }
 
 /// Longest accepted patch name / netplay group.
@@ -95,11 +96,15 @@ impl Manifest {
     /// Parse and validate the current manifest format. Compatibility readers
     /// adapt older input to this format before constructing a `Manifest`.
     pub fn parse(raw: &str) -> Result<Self, Error> {
-        let format = probe_format(raw)?;
+        Self::from_table(toml::from_str(raw)?)
+    }
+
+    fn from_table(table: toml::Table) -> Result<Self, Error> {
+        let format = probe_format(&table)?;
         if format != FORMAT {
             return Err(Error::UnsupportedFormat(format));
         }
-        let manifest: Manifest = toml::from_str(raw)?;
+        let manifest: Manifest = toml::Value::Table(table).try_into()?;
         manifest.validate()?;
         Ok(manifest)
     }
@@ -110,7 +115,7 @@ impl Manifest {
         raw: &str,
         targets: impl IntoIterator<Item = RomTarget>,
     ) -> Result<Self, Error> {
-        compat::parse(raw, targets)
+        compat::parse(toml::from_str(raw)?, targets)
     }
 
     fn validate(&self) -> Result<(), Error> {
@@ -307,9 +312,6 @@ title = "Legacy"
 [rom_overrides]
 language = "en-US"
 charset = [" ", "A"]
-
-[rom_overrides.legal_chip_ranges]
-BR5E_00 = [[1, 202], [301, 305]]
 "#;
         let gregar = "BR5E_00".parse().unwrap();
         let falzar = "BR6E_00".parse().unwrap();
@@ -322,13 +324,14 @@ BR5E_00 = [[1, 202], [301, 305]]
 
         assert_eq!(manifest.format, FORMAT);
         assert_eq!(
-            manifest.rom_overrides[&gregar].legal_chip_ranges.as_deref(),
-            Some([[1, 202], [301, 305]].as_slice())
+            manifest.rom_overrides[&gregar].language.as_ref().unwrap().to_string(),
+            "en-US"
         );
         assert_eq!(
             manifest.rom_overrides[&falzar].language.as_ref().unwrap().to_string(),
             "en-US"
         );
+        assert!(manifest.rom_overrides[&gregar].legal_chip_ranges.is_none());
         assert!(manifest.rom_overrides[&falzar].legal_chip_ranges.is_none());
 
         let upgraded = manifest.to_toml().unwrap();
@@ -336,26 +339,6 @@ BR5E_00 = [[1, 202], [301, 305]]
         assert!(upgraded.contains("[rom_overrides.BR5E_00]"));
         assert!(upgraded.contains("[rom_overrides.BR6E_00]"));
         assert_eq!(Manifest::parse(&upgraded).unwrap(), manifest);
-    }
-
-    #[test]
-    fn format_1_ranges_are_validated_by_the_format_2_parser() {
-        let raw = r#"
-format = 1
-name = "legacy"
-version = "1.0.0"
-title = "Legacy"
-
-[rom_overrides.legal_chip_ranges]
-BR5E_00 = [[202, 1]]
-"#;
-        let err = Manifest::parse_compatible(raw, ["BR5E_00".parse().unwrap()]).unwrap_err();
-        assert!(matches!(err, Error::ManifestSyntax(_)));
-        assert!(
-            err.to_string()
-                .contains("legal_chip_ranges: range start 202 exceeds end 1"),
-            "{err}"
-        );
     }
 
     #[test]

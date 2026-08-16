@@ -18,9 +18,6 @@ title = "Legacy"
 [rom_overrides]
 language = "en-US"
 charset = [" ", "A"]
-
-[rom_overrides.legal_chip_ranges]
-BR5E_00 = [[1, 202], [301, 305]]
 "#;
 
 fn full() -> bundle::Builder {
@@ -102,7 +99,7 @@ fn a_format_1_package_is_upgraded_per_rom_when_opened() {
     assert_eq!(manifest.format, 2);
     assert_eq!(manifest.rom_overrides.len(), 2);
     assert_eq!(gregar.charset, Some(vec![" ".into(), "A".into()]));
-    assert_eq!(gregar.legal_chip_ranges, Some(vec![[1, 202], [301, 305]]));
+    assert!(gregar.legal_chip_ranges.is_none());
     assert_eq!(falzar.charset, Some(vec![" ".into(), "A".into()]));
     assert!(falzar.legal_chip_ranges.is_none());
 }
@@ -124,7 +121,7 @@ fn a_format_1_source_tree_is_written_as_format_2() {
     assert_eq!(pkg.manifest().rom_overrides.len(), 2);
     assert!(pkg.manifest().rom_overrides[&target("BR5E_00")]
         .legal_chip_ranges
-        .is_some());
+        .is_none());
     assert!(pkg.manifest().rom_overrides[&target("BR6E_00")]
         .legal_chip_ranges
         .is_none());

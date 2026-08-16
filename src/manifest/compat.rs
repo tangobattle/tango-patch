@@ -1,93 +1,43 @@
 //! Manifest wire-format compatibility. Everything leaves this module as the
 //! current [`Manifest`] type; package and bundle code never carry legacy state.
 
-use super::{probe_format, Compatibility, Manifest, FORMAT};
-use crate::overrides::Overrides;
+use super::{probe_format, Manifest, FORMAT};
 use crate::{Error, RomTarget};
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 const FORMAT_1: u32 = 1;
 
 pub(super) fn parse(
-    raw: &str,
+    table: toml::Table,
     targets: impl IntoIterator<Item = RomTarget>,
 ) -> Result<Manifest, Error> {
-    match probe_format(raw)? {
-        FORMAT => Manifest::parse(raw),
-        FORMAT_1 => adapt_format_1(raw, targets),
+    match probe_format(&table)? {
+        FORMAT => Manifest::from_table(table),
+        FORMAT_1 => adapt_format_1(table, targets),
         other => Err(Error::UnsupportedFormat(other)),
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Format1Manifest {
-    format: u32,
-    name: String,
-    version: semver::Version,
-    title: String,
-    #[serde(default)]
-    authors: Vec<String>,
-    #[serde(default)]
-    license: Option<String>,
-    #[serde(default)]
-    source: Option<String>,
-    #[serde(default)]
-    netplay: Compatibility,
-    #[serde(default)]
-    rom_overrides: toml::Table,
-}
-
-/// Serialization-only current-format shape. The adapter emits this wire
-/// representation, then the strict parser constructs and validates the real
-/// `Manifest` exactly as it would for native format-2 input.
-#[derive(Serialize)]
-struct Format2Wire {
-    format: u32,
-    name: String,
-    version: semver::Version,
-    title: String,
-    authors: Vec<String>,
-    license: Option<String>,
-    source: Option<String>,
-    netplay: Compatibility,
-    rom_overrides: BTreeMap<RomTarget, Overrides>,
-}
-
 fn adapt_format_1(
-    raw: &str,
+    mut table: toml::Table,
     targets: impl IntoIterator<Item = RomTarget>,
 ) -> Result<Manifest, Error> {
-    let legacy: Format1Manifest = toml::from_str(raw)?;
-    debug_assert_eq!(legacy.format, FORMAT_1);
-
-    let mut fields = legacy.rom_overrides;
-    let ranges: BTreeMap<RomTarget, Vec<[usize; 2]>> = match fields.remove("legal_chip_ranges") {
+    let common: toml::Table = match table.remove("rom_overrides") {
         Some(value) => value.try_into()?,
-        None => BTreeMap::new(),
+        None => toml::Table::new(),
     };
-    let common: Overrides = toml::Value::Table(fields).try_into()?;
-    let mut rom_overrides = BTreeMap::new();
+
+    let mut rom_overrides = toml::Table::new();
     if !common.is_empty() {
-        rom_overrides.extend(targets.into_iter().map(|target| (target, common.clone())));
-    }
-    for (target, ranges) in ranges {
-        let mut overrides = common.clone();
-        overrides.legal_chip_ranges = Some(ranges);
-        rom_overrides.insert(target, overrides);
+        rom_overrides.extend(
+            targets
+                .into_iter()
+                .map(|target| (target.to_string(), toml::Value::Table(common.clone()))),
+        );
     }
 
-    let wire = Format2Wire {
-        format: FORMAT,
-        name: legacy.name,
-        version: legacy.version,
-        title: legacy.title,
-        authors: legacy.authors,
-        license: legacy.license,
-        source: legacy.source,
-        netplay: legacy.netplay,
-        rom_overrides,
-    };
-    Manifest::parse(&toml::to_string_pretty(&wire)?)
+    table.insert("format".into(), toml::Value::Integer(FORMAT.into()));
+    if !rom_overrides.is_empty() {
+        table.insert("rom_overrides".into(), toml::Value::Table(rom_overrides));
+    }
+    Manifest::from_table(table)
 }
